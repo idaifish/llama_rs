@@ -25,11 +25,26 @@ fn main() {
         .write_to_file(out_dir.join("binding.rs"))
         .expect("Failed to write binding");
 
-    let llamalib_dst = cmake::Config::new("llama.cpp")
-        .define("BUILD_SHARED_LIBS", "OFF")
-        .build();
+    let mut llamalib_conf = cmake::Config::new("llama.cpp");
+    llamalib_conf.define("BUILD_SHARED_LIBS", "OFF");
 
-    println!("cargo::warning={}/lib", llamalib_dst.display());
+    if cfg!(feature = "openblas") {
+        llamalib_conf.define("GGML_BLAS", "ON");
+        llamalib_conf.define("GGML_BLAS_VENDOR", "OpenBLAS");
+        println!("cargo::rustc-link-lib=dylib=openblas");
+        println!("cargo::rustc-link-lib=static=ggml-blas");
+    }
+
+    if cfg!(feature = "cuda") {
+        llamalib_conf.define("GGML_CUDA", "ON");
+        println!("cargo::rustc-link-lib=dylib=cuda");
+        println!("cargo::rustc-link-lib=dylib=cudart");
+        println!("cargo::rustc-link-lib=dylib=cublas");
+        println!("cargo::rustc-link-lib=static=ggml-cuda");
+    }
+
+    let llamalib_dst= llamalib_conf.build();
+
     println!("cargo::rustc-link-search=native={}/lib", llamalib_dst.display());
     println!("cargo::rustc-link-lib=dylib=stdc++");
     println!("cargo::rustc-link-lib=dylib=gomp");
