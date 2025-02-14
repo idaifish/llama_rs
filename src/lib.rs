@@ -18,6 +18,9 @@ impl LLM {
             text: *const c_char,
             user_data: *mut c_void,
         ) {
+            if level == llama_cpp::ggml_log_level_GGML_LOG_LEVEL_ERROR {
+                panic!("{:?}", CStr::from_ptr(text).to_str().unwrap());
+            }
         }
 
         unsafe {
@@ -25,7 +28,11 @@ impl LLM {
             llama_cpp::llama_log_set(Some(disable_log_callback), ptr::null_mut());
 
             // model
-            let model_params = llama_cpp::llama_model_default_params();
+            let mut model_params = llama_cpp::llama_model_default_params();
+            if cfg!(feature = "cuda") {
+                model_params.n_gpu_layers = 99;
+            }
+
             let model = llama_cpp::llama_load_model_from_file(
                 CString::new(model_path.to_str().unwrap()).unwrap().as_ptr(),
                 model_params,
@@ -39,7 +46,11 @@ impl LLM {
             ctx_params.n_batch = 2048;
             ctx_params.n_ubatch = ctx_params.n_batch;
             ctx_params.pooling_type = llama_cpp::llama_pooling_type_LLAMA_POOLING_TYPE_UNSPECIFIED;
-            let ctx = llama_cpp::llama_new_context_with_model(model, ctx_params);
+            let ctx = llama_cpp::llama_init_from_model(model, ctx_params);
+
+            if ctx.is_null() {
+                panic!("failed to create llama context");
+            }
 
             // sampler
             let mut sampler_params = llama_cpp::llama_sampler_chain_default_params();
@@ -61,6 +72,71 @@ impl LLM {
     }
 
     fn chat_completions() {}
+
+    pub fn completion(&mut self, prompt: &str) -> Result<String, &'static str> {
+        let role = CString::new("user").unwrap();
+        let content = CString::new(prompt).unwrap();
+
+        let user_prompt = llama_cpp::llama_chat_message {
+            role: role.as_ptr(),
+            content: content.as_ptr(),
+        };
+
+        let mut formatted_msg = Vec::<c_char>::with_capacity(prompt.len() * 2 + 100);
+
+        unsafe {
+            let msg_len = llama_cpp::llama_chat_apply_template(
+                ptr::null(),
+                &user_prompt,
+                1,
+                false,
+                formatted_msg.as_mut_ptr(),
+                formatted_msg.capacity().try_into().unwrap(),
+            );
+
+            if msg_len < 0 {
+                return Err("failed to apply chat template");
+            }
+
+            formatted_msg.set_len(msg_len.try_into().unwrap());
+            let formatted_msg = formatted_msg.iter().map(|&b| b as u8).collect::<Vec<u8>>();
+            match std::str::from_utf8(&formatted_msg) {
+                Ok(msg) => {
+                    let mut prompt_tokens = self.tokenize(msg).expect("failed to tokenize prompt");
+                    let mut batch = llama_cpp::llama_batch_get_one(
+                        prompt_tokens.as_mut_ptr(),
+                        prompt_tokens.len().try_into().unwrap(),
+                    );
+                    let mut predicted = Vec::<i32>::new();
+                    let n_ctx = llama_cpp::llama_n_ctx(self.ctx);
+                    let vocab = llama_cpp::llama_model_get_vocab(self.model);
+
+                    loop {
+                        let n_ctx_used = llama_cpp::llama_get_kv_cache_used_cells(self.ctx);
+                        if (n_ctx_used + batch.n_tokens > n_ctx.try_into().unwrap()) {
+                            return Err("context size exceeded");
+                        }
+
+                        if (llama_cpp::llama_decode(self.ctx, batch) < 0) {
+                            return Err("failed to decode user prompt");
+                        }
+
+                        let mut predicted_token = llama_cpp::llama_sampler_sample(self.sampler, self.ctx, -1);
+                        if llama_cpp::llama_token_is_eog(vocab, predicted_token) {
+                            break;
+                        } else {
+                            predicted.push(predicted_token);
+                        }
+
+                        batch = llama_cpp::llama_batch_get_one(&mut predicted_token as *mut i32, 1)
+                    }
+
+                    self.detokenize(predicted)
+                }
+                Err(_) => return Err("failed to apply chat template"),
+            }
+        }
+    }
 
     pub fn embed(&mut self, prompt: &str) -> Result<Vec<f32>, &'static str> {
         fn batch_decode(
@@ -143,7 +219,7 @@ impl LLM {
                 text.as_bytes().len() as i32,
                 tokens.as_mut_ptr(),
                 n_ctx,
-                true,
+                llama_cpp::llama_vocab_get_add_bos(vocab),
                 false,
             );
 
