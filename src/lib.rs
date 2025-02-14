@@ -166,7 +166,13 @@ impl LLM {
                 }
 
                 // get embedding
-                let embedding_ptr = llama_cpp::llama_get_embeddings_seq(ctx, 0);
+                let embedding_ptr: *mut f32;
+                if llama_cpp::llama_pooling_type(ctx) != llama_cpp::llama_pooling_type_LLAMA_POOLING_TYPE_NONE {
+                    embedding_ptr = llama_cpp::llama_get_embeddings_seq(ctx, 0);
+                } else {
+                    embedding_ptr = llama_cpp::llama_get_embeddings(ctx);
+                }
+
                 if embedding_ptr.is_null() {
                     return Vec::new();
                 }
