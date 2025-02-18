@@ -1,18 +1,154 @@
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::Path;
-use std::ptr::{self, slice_from_raw_parts};
+use std::ptr;
 
 mod llama_cpp;
+
+#[derive(Debug, Clone)]
+pub struct LLMOptions {
+    // model
+    pub n_gpu_layers: i32,
+    // context
+    pub n_ctx: u32,
+    pub n_max_tokens: usize,
+    pub n_batch: u32,
+    pub n_ubatch: u32,
+    pub n_threads: i32,       // number of threads to use for generation
+    pub n_threads_batch: i32, // number of threads to use for batch processing
+    // sampling
+    pub temperature: f32,
+    pub seed: u32,
+    pub top_k: i32,
+    pub top_p: f32,
+    pub min_p: f32,
+    pub stop_words: Vec<String>,
+    pub penalty_last_n: i32,
+    pub penalty_repeat: f32,
+    pub penalty_freq: f32,
+    pub penalty_present: f32,
+}
+
+impl Default for LLMOptions {
+    fn default() -> Self {
+        Self {
+            n_gpu_layers: 0,
+            n_ctx: 0, // use context size from GGUF file.
+            n_max_tokens: 512,
+            n_batch: 512,
+            n_ubatch: 512,
+            n_threads: 1,
+            n_threads_batch: 1,
+            temperature: 0.8,
+            seed: 1337,
+            top_k: 40,
+            top_p: 0.95,
+            min_p: 0.05,
+            stop_words: Vec::new(),
+            penalty_last_n: 0, // (0 = disable penalty, -1 = context size)
+            penalty_repeat: 1.0,
+            penalty_freq: 0.0,
+            penalty_present: 0.0,
+        }
+    }
+}
+
+impl LLMOptions {
+    pub fn n_gpu_layers(&mut self, n_gpu_layers: i32) -> &mut Self {
+        self.n_gpu_layers = n_gpu_layers;
+        self
+    }
+
+    pub fn n_ctx(&mut self, n_ctx: u32) -> &mut Self {
+        self.n_ctx = n_ctx;
+        self
+    }
+
+    pub fn n_max_tokens(&mut self, n_max_tokens: usize) -> &mut Self {
+        self.n_max_tokens = n_max_tokens;
+        self
+    }
+
+    pub fn n_batch(&mut self, n_batch: u32) -> &mut Self {
+        self.n_batch = n_batch;
+        self
+    }
+
+    pub fn n_ubatch(&mut self, n_ubatch: u32) -> &mut Self {
+        self.n_ubatch = n_ubatch;
+        self
+    }
+
+    pub fn n_threads(&mut self, n_threads: i32) -> &mut Self {
+        self.n_threads = n_threads;
+        self
+    }
+
+    pub fn n_threads_batch(&mut self, n_threads_batch: i32) -> &mut Self {
+        self.n_threads_batch = n_threads_batch;
+        self
+    }
+
+    pub fn temperature(&mut self, temperature: f32) -> &mut Self {
+        self.temperature = temperature;
+        self
+    }
+
+    pub fn seed(&mut self, seed: u32) -> &mut Self {
+        self.seed = seed;
+        self
+    }
+
+    pub fn top_k(&mut self, top_k: i32) -> &mut Self {
+        self.top_k = top_k;
+        self
+    }
+
+    pub fn top_p(&mut self, top_p: f32) -> &mut Self {
+        self.top_p = top_p;
+        self
+    }
+
+    pub fn min_p(&mut self, min_p: f32) -> &mut Self {
+        self.min_p = min_p;
+        self
+    }
+
+    pub fn stop_words(&mut self, stop_words: Vec<String>) -> &mut Self {
+        self.stop_words = stop_words;
+        self
+    }
+
+    pub fn penalty_last_n(&mut self, penalty_last_n: i32) -> &mut Self {
+        self.penalty_last_n = penalty_last_n;
+        self
+    }
+
+    pub fn penalty_freq(&mut self, penalty_freq: f32) -> &mut Self {
+        self.penalty_freq = penalty_freq;
+        self
+    }
+
+    pub fn penalty_repeat(&mut self, penalty_repeat: f32) -> &mut Self {
+        self.penalty_repeat = penalty_repeat;
+        self
+    }
+
+    pub fn penalty_present(&mut self, penalty_present: f32) -> &mut Self {
+        self.penalty_present = penalty_present;
+        self
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct LLM {
     pub model: *mut llama_cpp::llama_model,
     pub ctx: *mut llama_cpp::llama_context,
     pub sampler: *mut llama_cpp::llama_sampler,
+    options: LLMOptions,
 }
 
 impl LLM {
-    pub fn new(model_path: &Path) -> Self {
+    pub fn new(model_path: &Path, options: LLMOptions) -> Self {
         unsafe extern "C" fn disable_log_callback(
             level: llama_cpp::ggml_log_level,
             text: *const c_char,
@@ -25,26 +161,30 @@ impl LLM {
 
         unsafe {
             // disable log
-            llama_cpp::llama_log_set(Some(disable_log_callback), ptr::null_mut());
+            if std::env::var("LLAMA_DEBUG").is_err() {
+                llama_cpp::llama_log_set(Some(disable_log_callback), ptr::null_mut());
+            }
 
             // model
             let mut model_params = llama_cpp::llama_model_default_params();
-            if cfg!(feature = "cuda") {
-                model_params.n_gpu_layers = 99;
-            }
-
+            model_params.n_gpu_layers = options.n_gpu_layers;
             let model = llama_cpp::llama_load_model_from_file(
                 CString::new(model_path.to_str().unwrap()).unwrap().as_ptr(),
                 model_params,
             );
+            if model.is_null() {
+                panic!("failed to load model from file");
+            }
 
             // context
             let mut ctx_params = llama_cpp::llama_context_default_params();
-            ctx_params.n_ctx = 0; // use context size from GGUF file.
+            ctx_params.n_ctx = options.n_ctx;
             ctx_params.embeddings = false;
             ctx_params.no_perf = true;
-            ctx_params.n_batch = 2048;
-            ctx_params.n_ubatch = ctx_params.n_batch;
+            ctx_params.n_batch = options.n_batch;
+            ctx_params.n_ubatch = options.n_ubatch;
+            ctx_params.n_threads = options.n_threads;
+            ctx_params.n_threads_batch = options.n_threads_batch;
             ctx_params.pooling_type = llama_cpp::llama_pooling_type_LLAMA_POOLING_TYPE_UNSPECIFIED;
             let ctx = llama_cpp::llama_init_from_model(model, ctx_params);
 
@@ -58,15 +198,39 @@ impl LLM {
             let sampler = llama_cpp::llama_sampler_chain_init(sampler_params);
             llama_cpp::llama_sampler_chain_add(
                 sampler,
-                llama_cpp::llama_sampler_init_min_p(0.05f32, 1),
+                llama_cpp::llama_sampler_init_min_p(options.min_p, 1),
             );
-            llama_cpp::llama_sampler_chain_add(sampler, llama_cpp::llama_sampler_init_temp(0.8f32));
-            llama_cpp::llama_sampler_chain_add(sampler, llama_cpp::llama_sampler_init_dist(1337));
+            llama_cpp::llama_sampler_chain_add(
+                sampler,
+                llama_cpp::llama_sampler_init_top_p(options.top_p, 1),
+            );
+            llama_cpp::llama_sampler_chain_add(
+                sampler,
+                llama_cpp::llama_sampler_init_top_k(options.top_k),
+            );
+            llama_cpp::llama_sampler_chain_add(
+                sampler,
+                llama_cpp::llama_sampler_init_temp(options.temperature),
+            );
+            llama_cpp::llama_sampler_chain_add(
+                sampler,
+                llama_cpp::llama_sampler_init_penalties(
+                    options.penalty_last_n,
+                    options.penalty_repeat,
+                    options.penalty_freq,
+                    options.penalty_present,
+                ),
+            );
+            llama_cpp::llama_sampler_chain_add(
+                sampler,
+                llama_cpp::llama_sampler_init_dist(options.seed),
+            );
 
             Self {
                 model,
                 ctx,
                 sampler,
+                options,
             }
         }
     }
@@ -121,11 +285,21 @@ impl LLM {
                             return Err("failed to decode user prompt");
                         }
 
-                        let mut predicted_token = llama_cpp::llama_sampler_sample(self.sampler, self.ctx, -1);
-                        if llama_cpp::llama_token_is_eog(vocab, predicted_token) {
+                        let mut predicted_token =
+                            llama_cpp::llama_sampler_sample(self.sampler, self.ctx, -1);
+                        if llama_cpp::llama_vocab_is_eog(vocab, predicted_token) {
                             break;
                         } else {
                             predicted.push(predicted_token);
+
+                            if predicted.len() >= self.options.n_max_tokens {
+                                break;
+                            }
+
+                            let result = self.detokenize(predicted.clone()).unwrap();
+                            if self.options.stop_words.iter().any(|s| result.ends_with(s)) {
+                                break;
+                            }
                         }
 
                         batch = llama_cpp::llama_batch_get_one(&mut predicted_token as *mut i32, 1)
@@ -167,7 +341,9 @@ impl LLM {
 
                 // get embedding
                 let embedding_ptr: *mut f32;
-                if llama_cpp::llama_pooling_type(ctx) != llama_cpp::llama_pooling_type_LLAMA_POOLING_TYPE_NONE {
+                if llama_cpp::llama_pooling_type(ctx)
+                    != llama_cpp::llama_pooling_type_LLAMA_POOLING_TYPE_NONE
+                {
                     embedding_ptr = llama_cpp::llama_get_embeddings_seq(ctx, 0);
                 } else {
                     embedding_ptr = llama_cpp::llama_get_embeddings(ctx);
@@ -256,7 +432,7 @@ impl LLM {
                 false,
             );
 
-            if n_text > 0 {
+            if n_text >= 0 {
                 text.set_len(n_text.try_into().unwrap());
                 let text = text.iter().map(|&b| b as u8).collect::<Vec<u8>>();
                 match std::str::from_utf8(&text) {

@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use llama_rs::LLM;
+use llama_rs::{LLMOptions, LLM};
 
 fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum()
@@ -17,7 +17,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
 fn main() {
     let start = Instant::now();
-    let mut llm = LLM::new(Path::new("/tmp/nomic-embed-text.gguf"));
+    let mut llm = LLM::new(Path::new("/tmp/qwen2.5-coder-3b.gguf"), LLMOptions::default());
 
     let tokens = llm.tokenize("hello llama, hello llama.cpp").unwrap();
     println!("tokenize: {:?}", tokens);
