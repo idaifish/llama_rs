@@ -6,7 +6,7 @@ use llama_rs::{LLMOptions, LLM};
 
 fn main() {
     env::set_var("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1");
-    
+
     let start = Instant::now();
 
     let options = LLMOptions {
@@ -20,7 +20,7 @@ fn main() {
     println!("LLM Options => {:#?}", &options);
     let mut llm = LLM::new(Path::new("/tmp/qwen2.5-coder-3b.gguf"), options);
     let response = llm.completion("hi, who are you").unwrap();
-    println!("response => {}", response.trim());
+    println!("response => {}", response);
 
     println!("{:?} elapsed", start.elapsed());
 }

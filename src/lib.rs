@@ -253,7 +253,7 @@ impl LLM {
                 ptr::null(),
                 &user_prompt,
                 1,
-                false,
+                true,
                 formatted_msg.as_mut_ptr(),
                 formatted_msg.capacity().try_into().unwrap(),
             );
