@@ -5,7 +5,9 @@ use std::time::Instant;
 use llama_rs::{LLMOptions, LLM};
 
 fn main() {
-    env::set_var("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1");
+    if cfg!(feature = "cuda") {
+        env::set_var("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1");
+    }
 
     let start = Instant::now();
 
@@ -19,7 +21,9 @@ fn main() {
     };
     println!("LLM Options => {:#?}", &options);
     let mut llm = LLM::new(Path::new("/tmp/qwen2.5-coder-3b.gguf"), options);
-    let response = llm.completion("hi, who are you").unwrap();
+    let response = llm.completion("hi, i am ").unwrap();
+    println!("response => {}", response);
+    let response = llm.chat_completions("hi, who are you?").unwrap();
     println!("response => {}", response);
 
     println!("{:?} elapsed", start.elapsed());

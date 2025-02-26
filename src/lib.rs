@@ -235,9 +235,7 @@ impl LLM {
         }
     }
 
-    fn chat_completions() {}
-
-    pub fn completion(&mut self, prompt: &str) -> Result<String, &'static str> {
+    pub fn chat_completions(&mut self, prompt: &str) -> Result<String, &'static str> {
         let role = CString::new("user").unwrap();
         let content = CString::new(prompt).unwrap();
 
@@ -266,49 +264,55 @@ impl LLM {
             let formatted_msg = formatted_msg.iter().map(|&b| b as u8).collect::<Vec<u8>>();
             match std::str::from_utf8(&formatted_msg) {
                 Ok(msg) => {
-                    let mut prompt_tokens = self.tokenize(msg).expect("failed to tokenize prompt");
-                    let mut batch = llama_cpp::llama_batch_get_one(
-                        prompt_tokens.as_mut_ptr(),
-                        prompt_tokens.len().try_into().unwrap(),
-                    );
-                    let mut predicted = Vec::<i32>::new();
-                    let n_ctx = llama_cpp::llama_n_ctx(self.ctx);
-                    let vocab = llama_cpp::llama_model_get_vocab(self.model);
-
-                    loop {
-                        let n_ctx_used = llama_cpp::llama_get_kv_cache_used_cells(self.ctx);
-                        if (n_ctx_used + batch.n_tokens > n_ctx.try_into().unwrap()) {
-                            return Err("context size exceeded");
-                        }
-
-                        if (llama_cpp::llama_decode(self.ctx, batch) < 0) {
-                            return Err("failed to decode user prompt");
-                        }
-
-                        let mut predicted_token =
-                            llama_cpp::llama_sampler_sample(self.sampler, self.ctx, -1);
-                        if llama_cpp::llama_vocab_is_eog(vocab, predicted_token) {
-                            break;
-                        } else {
-                            predicted.push(predicted_token);
-
-                            if predicted.len() >= self.options.n_max_tokens {
-                                break;
-                            }
-
-                            let result = self.detokenize(predicted.clone()).unwrap();
-                            if self.options.stop_words.iter().any(|s| result.ends_with(s)) {
-                                break;
-                            }
-                        }
-
-                        batch = llama_cpp::llama_batch_get_one(&mut predicted_token as *mut i32, 1)
-                    }
-
-                    self.detokenize(predicted)
+                    self.completion(msg)
                 }
                 Err(_) => return Err("failed to apply chat template"),
             }
+        }
+    }
+
+    pub fn completion(&mut self, prompt: &str) -> Result<String, &'static str> {
+        unsafe {
+            let mut prompt_tokens = self.tokenize(prompt).expect("failed to tokenize prompt");
+            let mut batch = llama_cpp::llama_batch_get_one(
+                prompt_tokens.as_mut_ptr(),
+                prompt_tokens.len().try_into().unwrap(),
+            );
+            let mut predicted = Vec::<i32>::new();
+            let n_ctx = llama_cpp::llama_n_ctx(self.ctx);
+            let vocab = llama_cpp::llama_model_get_vocab(self.model);
+
+            loop {
+                let n_ctx_used = llama_cpp::llama_get_kv_cache_used_cells(self.ctx);
+                if (n_ctx_used + batch.n_tokens > n_ctx.try_into().unwrap()) {
+                    return Err("context size exceeded");
+                }
+
+                if (llama_cpp::llama_decode(self.ctx, batch) < 0) {
+                    return Err("failed to decode user prompt");
+                }
+
+                let mut predicted_token =
+                    llama_cpp::llama_sampler_sample(self.sampler, self.ctx, -1);
+                if llama_cpp::llama_vocab_is_eog(vocab, predicted_token) {
+                    break;
+                } else {
+                    predicted.push(predicted_token);
+
+                    if predicted.len() >= self.options.n_max_tokens {
+                        break;
+                    }
+
+                    let result = self.detokenize(predicted.clone()).unwrap();
+                    if self.options.stop_words.iter().any(|s| result.ends_with(s)) {
+                        break;
+                    }
+                }
+
+                batch = llama_cpp::llama_batch_get_one(&mut predicted_token as *mut i32, 1)
+            }
+
+            self.detokenize(predicted)
         }
     }
 
@@ -419,7 +423,7 @@ impl LLM {
             let vocab = llama_cpp::llama_model_get_vocab(self.model);
             let n_ctx = llama_cpp::llama_model_n_ctx_train(self.model);
             let n_tokens = tokens.len();
-            let text_len_max = n_tokens * 5;
+            let text_len_max = self.options.n_max_tokens * 5;
             let mut text = Vec::<c_char>::with_capacity(text_len_max + 1);
 
             let n_text = llama_cpp::llama_detokenize(
